@@ -126,3 +126,75 @@ Core classes include:
 ## 8. Nashorn JavaScript Engine
 
 Java 8 embedded a brand new, high-performance JavaScript execution engine named **Nashorn**. It allowed developers to execute JavaScript code dynamically inside the JVM container. *(Note: Nashorn was later deprecated in Java 11 and completely removed in Java 15 as external JS engines evolved).*
+
+---
+We generally avoid using `parallelStream()` in production environments—especially in web services and microservices (like Spring Boot applications)—because of how Java handles thread pools and shared resources.
+
+The main architectural and operational reasons include:
+
+---
+
+### 1. The Shared `ForkJoinPool.commonPool()` Bottleneck
+
+By default, all parallel streams across your entire JVM application share one single, global thread pool: `ForkJoinPool.commonPool()`.
+
+* The size of this pool is fixed to `Runtime.getRuntime().availableProcessors() - 1`.
+* If one background job or HTTP request triggers a heavy `parallelStream()`, it saturates all common pool worker threads.
+* Every other independent request or task in the entire application that needs a parallel stream or `CompletableFuture.supplyAsync()` will stall and wait, causing unpredictable latency spikes across unrelated features.
+
+---
+
+### 2. Blocking I/O Will Starve the JVM
+
+Parallel streams were designed strictly for **CPU-bound, in-memory computations** (like processing large arrays of numbers).
+
+* If any step inside the pipeline performs blocking operations—such as calling a REST API, querying a database, or reading from disk—those common worker threads get blocked in a waiting state.
+* Once the small pool of threads is blocked, the entire JVM loses its ability to parallelize anything else.
+
+---
+
+### 3. Loss of Context (MDC, Security, Transactions)
+
+Production applications rely heavily on `ThreadLocal` storage for cross-cutting concerns:
+
+* **Logging:** SLF4J / Logback MDC (Mapped Diagnostic Context) for request tracking IDs (`traceId`, `userId`).
+* **Security:** `SecurityContextHolder` in Spring Security.
+* **Database Transactions:** `@Transactional` uses thread-bound transaction contexts.
+
+When a pipeline splits tasks across multiple worker threads in the common pool, those child threads do **not** inherit the calling thread's `ThreadLocal` variables. This leads to missing trace IDs in logs and broken security or database context.
+
+---
+
+### 4. High Overhead for Small Collections
+
+Parallelizing work requires splitting collections (via `Spliterator`), managing task queues, context switching, and merging results back together.
+
+* For small to medium data sets (e.g., hundreds or thousands of elements), the coordination and context-switching overhead is often higher than simply running a standard sequential `stream()` or `for` loop on a single CPU core.
+
+---
+
+### 5. Web Servers Already Handle Parallelism
+
+In a web backend (Tomcat, Jetty, Netty), concurrency is already achieved at the **request level**:
+
+* 200 incoming HTTP requests run concurrently on 200 worker threads.
+* If each of those 200 request threads also tries to spawn a parallel stream of 8 threads, you end up with massive thread contention, excessive CPU context-switching, and degraded overall throughput.
+
+---
+
+### Summary Table
+
+| Feature | Sequential `stream()` / Custom Pool | `parallelStream()` in Production |
+| --- | --- | --- |
+| **Thread Isolation** | Isolated per request or dedicated pool | Shared globally across whole JVM |
+| **I/O Safety** | Safe (isolated to caller thread) | High risk of pool exhaustion |
+| **`ThreadLocal` / Logging** | Preserved | Lost / Corrupted |
+| **Overhead** | Minimal | High thread coordination overhead |
+
+---
+
+### When Is It Safe to Use?
+
+* In **isolated, standalone batch/CLI applications** where the JVM does only one thing at a time.
+* Pure **CPU-bound operations** (e.g., matrix math, image rendering, parsing large in-memory files) with zero network/database I/O.
+* When wrapped in an isolated, custom `ForkJoinPool` rather than using the default common pool.
