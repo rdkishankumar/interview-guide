@@ -767,3 +767,695 @@ If your interview time is limited, focus heavily on these:
 50. **Design a highly available Kafka architecture for a production microservices system.**
 
 These last **50 questions** are the ones I'd put at the top of your preparation list for a senior Java/Spring Boot interview.
+
+------------
+Here are **30 Apache Kafka error-handling interview questions with practical scenarios**, arranged from **basic to advanced**.
+
+## 1. What happens if a Kafka producer cannot connect to a broker?
+
+**Scenario:** The application starts, but one or more Kafka brokers are down.
+
+* Producer retries based on `retries`.
+* Metadata may be refreshed to find available brokers.
+* If retries are exhausted, an exception is returned to the application.
+
+**Follow-up:** How would you prevent message loss?
+
+---
+
+## 2. What is the difference between retrying a message and sending it to a Dead Letter Topic (DLT)?
+
+**Scenario:** A consumer receives an invalid JSON message.
+
+* **Retry:** Used when the failure may be temporary.
+* **DLT:** Used when the message is permanently invalid or cannot be processed after retries.
+
+---
+
+## 3. How do you handle a deserialization exception in Kafka?
+
+**Scenario:** A producer sends malformed JSON, and the consumer cannot deserialize it.
+
+Questions:
+
+* Does the consumer continue processing?
+* What happens to the offset?
+* How can you send the bad message to a DLT?
+
+A common solution is to use an error-handling deserializer such as Spring Kafka's `ErrorHandlingDeserializer`.
+
+---
+
+## 4. What happens if a consumer throws an exception while processing a message?
+
+**Scenario:**
+
+```text
+Message → Consumer → Database update → Exception
+```
+
+What should happen next?
+
+Possible strategies:
+
+1. Retry immediately.
+2. Retry with backoff.
+3. Pause the consumer.
+4. Send the message to a retry topic.
+5. Send it to a DLT.
+
+---
+
+## 5. How would you handle temporary database failures?
+
+**Scenario:** Kafka consumer receives a message, but the database is temporarily unavailable.
+
+Expected approach:
+
+```text
+Kafka Message
+     ↓
+Process
+     ↓
+Database unavailable
+     ↓
+Retry with backoff
+     ↓
+Success → Commit offset
+Failure after max retries → DLT
+```
+
+**Interview question:** Why should you not immediately send a temporary failure to the DLT?
+
+---
+
+## 6. What happens if you commit the Kafka offset before processing the message?
+
+**Scenario:**
+
+```text
+Commit Offset
+     ↓
+Application crashes
+     ↓
+Message was never processed
+```
+
+The message can be lost from the application's processing perspective.
+
+**Question:** How do you avoid this?
+
+---
+
+## 7. What happens if processing succeeds but offset commit fails?
+
+**Scenario:**
+
+```text
+Process Message Successfully
+        ↓
+Commit Offset
+        ↓
+Commit fails
+        ↓
+Consumer restarts
+        ↓
+Same message processed again
+```
+
+This can cause **duplicate processing**.
+
+**Question:** How would you make your consumer idempotent?
+
+---
+
+## 8. How do you handle poison pill messages?
+
+**Scenario:** One particular message always causes an exception.
+
+Example:
+
+```text
+Offset 100 → Success
+Offset 101 → Success
+Offset 102 → Always fails
+Offset 103 → Cannot reach yet
+```
+
+If offset 102 is continuously retried, consumer processing may become blocked.
+
+**Expected solution:**
+
+* Limited retries
+* DLT
+* Commit/advance after handling according to the chosen strategy
+
+---
+
+## 9. What is a Dead Letter Topic?
+
+**Scenario:** A message fails processing three times.
+
+```text
+Main Topic
+    ↓
+Retry 1
+    ↓
+Retry 2
+    ↓
+Retry 3
+    ↓
+Dead Letter Topic
+```
+
+**Question:** What information should you store with the failed message?
+
+Good answers include:
+
+* Original topic
+* Partition
+* Offset
+* Exception details
+* Timestamp
+* Original payload
+
+---
+
+## 10. How would you retry Kafka messages?
+
+**Scenario:** An external API temporarily returns HTTP 503.
+
+Possible approaches:
+
+* Blocking retry
+* Retry topics
+* Exponential backoff
+* Delayed retries
+
+**Question:** Which approach is better for a high-throughput consumer and why?
+
+---
+
+## 11. What is exponential backoff?
+
+**Scenario:** An external service is temporarily overloaded.
+
+Example:
+
+```text
+Retry 1 → 1 second
+Retry 2 → 2 seconds
+Retry 3 → 4 seconds
+Retry 4 → 8 seconds
+```
+
+**Question:** Why is exponential backoff better than immediate continuous retries?
+
+---
+
+## 12. What problems can blocking retries cause?
+
+**Scenario:** A consumer processes messages sequentially and waits 30 seconds for each retry.
+
+Possible issues:
+
+* Partition processing is blocked.
+* Consumer lag increases.
+* Consumer may exceed `max.poll.interval.ms`.
+* Consumer rebalance may occur.
+
+**Question:** What is a better alternative?
+
+Expected answer: retry topics or asynchronous retry strategies.
+
+---
+
+## 13. How do retry topics work?
+
+**Scenario:**
+
+```text
+orders
+   ↓
+Processing fails
+   ↓
+orders-retry-1
+   ↓
+Processing fails
+   ↓
+orders-retry-2
+   ↓
+Processing fails
+   ↓
+orders-DLT
+```
+
+**Question:** What are the advantages of retry topics compared with blocking retries?
+
+---
+
+## 14. How would you handle failures when producing to Kafka?
+
+**Scenario:** Your application creates an order and sends an event to Kafka.
+
+```text
+Order created
+      ↓
+Send Kafka event
+      ↓
+Kafka unavailable
+```
+
+**Question:** How do you ensure that the database and Kafka do not become inconsistent?
+
+Expected discussion:
+
+* Transactions
+* Outbox pattern
+* Retry
+* Idempotent producer
+
+---
+
+## 15. What is the Outbox Pattern?
+
+**Scenario:** Database transaction succeeds, but Kafka publishing fails.
+
+Solution concept:
+
+```text
+Application Transaction
+       ↓
+Database Update
+       +
+Outbox Record
+       ↓
+Commit Transaction
+       ↓
+Outbox Publisher
+       ↓
+Kafka
+```
+
+**Question:** Why is the Outbox Pattern useful for error handling?
+
+---
+
+## 16. What happens if the Kafka producer times out?
+
+**Scenario:** The producer sends a message but does not receive an acknowledgement before the timeout.
+
+The producer may not know whether:
+
+1. The broker never received the message.
+2. The broker received it but the acknowledgement was lost.
+
+**Question:** How can this situation cause duplicates?
+
+Expected discussion: idempotent producers.
+
+---
+
+## 17. How does an idempotent Kafka producer help during failures?
+
+**Scenario:**
+
+```text
+Producer sends message
+        ↓
+Broker receives message
+        ↓
+Acknowledgement lost
+        ↓
+Producer retries
+```
+
+Without idempotence:
+
+```text
+Message
+Message again
+```
+
+With idempotence, Kafka helps prevent duplicate records caused by producer retries.
+
+---
+
+## 18. How do you handle duplicate messages in a Kafka consumer?
+
+**Scenario:** A consumer processes a payment successfully, but crashes before committing the offset.
+
+After restart:
+
+```text
+Same message is consumed again.
+```
+
+Possible solutions:
+
+* Idempotency key
+* Database unique constraint
+* Processed-event table
+* Deduplication store
+
+**Question:** Where should deduplication state be stored?
+
+---
+
+## 19. How do you handle errors in exactly-once processing?
+
+**Scenario:** A Kafka Streams application processes data and produces output, but crashes during processing.
+
+**Question:** How does Kafka transaction-based processing help prevent partial results?
+
+Discuss:
+
+* Transactions
+* Read-committed consumers
+* Atomic processing and output
+
+---
+
+## 20. What happens if a consumer crashes while processing a batch?
+
+**Scenario:**
+
+```text
+Message 1 → Success
+Message 2 → Success
+Message 3 → Success
+Message 4 → Crash
+```
+
+Questions:
+
+* Which offsets were committed?
+* Which messages can be processed again?
+* How can duplicates occur?
+
+---
+
+## 21. How do you handle partial failure in batch processing?
+
+**Scenario:** A consumer fetches 100 records.
+
+```text
+Records 1–70 → Success
+Record 71 → Failure
+Records 72–100 → Not processed
+```
+
+**Question:** Should you retry the entire batch or only the failed record?
+
+Discuss:
+
+* Batch listener behavior
+* Offset management
+* Individual record retry
+* DLT
+
+---
+
+## 22. What happens when a consumer cannot process messages fast enough?
+
+**Scenario:** Producer rate is:
+
+```text
+10,000 messages/second
+```
+
+Consumer processing rate:
+
+```text
+5,000 messages/second
+```
+
+Consumer lag continuously increases.
+
+**Question:** Is this an error-handling problem or a scaling problem?
+
+Possible solutions:
+
+* Increase partitions
+* Increase consumers
+* Optimize processing
+* Apply backpressure
+* Reduce downstream latency
+
+---
+
+## 23. What happens if `max.poll.interval.ms` is exceeded?
+
+**Scenario:** Message processing takes too long.
+
+```text
+Consumer polls messages
+       ↓
+Processing takes too long
+       ↓
+No next poll
+       ↓
+max.poll.interval.ms exceeded
+       ↓
+Consumer considered failed
+       ↓
+Rebalance
+```
+
+**Question:** How can retries accidentally cause this problem?
+
+---
+
+## 24. How do you handle errors during a consumer group rebalance?
+
+**Scenario:** Consumer A is processing a message when a rebalance happens.
+
+Questions:
+
+* What happens to the partition?
+* Can another consumer process the same message?
+* How do you avoid duplicate side effects?
+
+Expected answer: idempotent processing is important.
+
+---
+
+## 25. How do you handle schema evolution errors?
+
+**Scenario:** Producer upgrades the message:
+
+```json
+{
+  "orderId": 100,
+  "customerName": "John",
+  "priority": "HIGH"
+}
+```
+
+But an old consumer cannot handle the new schema.
+
+**Question:** How do Avro or Schema Registry compatibility rules help prevent this?
+
+---
+
+## 26. How would you handle an external API failure?
+
+**Scenario:**
+
+```text
+Kafka Message
+      ↓
+Consumer
+      ↓
+External Payment API
+      ↓
+HTTP 500
+```
+
+A good strategy might be:
+
+```text
+Retry
+  ↓
+Exponential Backoff
+  ↓
+Retry Topic
+  ↓
+DLT
+```
+
+**Follow-up:** What if the API call succeeded but the response was lost?
+
+This requires **idempotency** at the external service boundary.
+
+---
+
+## 27. How do you prevent a DLT from becoming a "black hole"?
+
+**Scenario:** Thousands of messages are sent to the DLT, but nobody processes them.
+
+**Interview questions:**
+
+* Who monitors the DLT?
+* How do you alert on DLT growth?
+* Can messages be replayed?
+* How do you fix the original issue before replaying?
+
+A DLT should be part of an operational workflow, not just a dumping location.
+
+---
+
+## 28. How would you replay messages from a Dead Letter Topic?
+
+**Scenario:** A bug caused 10,000 messages to fail. The application is now fixed.
+
+Questions:
+
+```text
+DLT
+ ↓
+Validate/Fix
+ ↓
+Replay
+ ↓
+Original Topic or Replay Topic
+```
+
+How do you prevent:
+
+* Duplicate processing?
+* Infinite retry loops?
+* Reprocessing already successful messages?
+
+---
+
+## 29. Design an error-handling architecture for an order-processing system
+
+**Scenario:**
+
+```text
+Order Created Event
+        ↓
+Kafka Consumer
+        ↓
+Validate Order
+        ↓
+Call Payment Service
+        ↓
+Update Database
+        ↓
+Publish Order Completed Event
+```
+
+Possible failures:
+
+* Invalid message
+* Database down
+* Payment API timeout
+* Duplicate message
+* Kafka unavailable
+* Consumer crash
+
+**Interview question:** Design the complete error-handling architecture.
+
+A strong answer should include:
+
+```text
+Main Topic
+    ↓
+Validation Failure → DLT
+
+Temporary Failure
+    ↓
+Retry Topic 1
+    ↓
+Retry Topic 2
+    ↓
+Retry Topic 3
+    ↓
+DLT
+
+Duplicate Message
+    ↓
+Idempotency Check
+    ↓
+Ignore or safely process
+```
+
+---
+
+## 30. Advanced scenario: How would you design Kafka error handling for production?
+
+**Scenario:** You process millions of financial transactions.
+
+Requirements:
+
+* No message loss
+* Minimal duplicates
+* External services can fail
+* Database can fail
+* Messages can be malformed
+* Processing must scale
+
+**Expected architecture:**
+
+```text
+                    ┌──────────────┐
+                    │ Main Topic   │
+                    └──────┬───────┘
+                           │
+                    ┌──────▼───────┐
+                    │  Consumer    │
+                    └──────┬───────┘
+                           │
+              ┌────────────┼────────────┐
+              │            │            │
+         Success      Temporary      Permanent
+              │         Failure       Failure
+              │            │            │
+              ▼            ▼            ▼
+        Commit Offset   Retry Topics    DLT
+                           │
+                     Max Retries?
+                       │       │
+                      No      Yes
+                       │       │
+                    Retry     DLT
+```
+
+A strong production answer should discuss:
+
+* Idempotent processing
+* Retry strategy
+* Exponential backoff
+* Retry topics
+* DLT
+* Offset management
+* Database transactions
+* Outbox Pattern
+* Idempotent producers
+* Monitoring and alerting
+* DLT replay
+* Schema validation
+* Consumer lag monitoring
+
+---
+
+# Top 10 Most Important Kafka Error-Handling Questions for Interviews
+
+If you're short on time, focus especially on these:
+
+1. **What happens if consumer processing fails?**
+2. **What is a Dead Letter Topic and when should you use it?**
+3. **How do retry topics work?**
+4. **How do you handle poison pill messages?**
+5. **What happens if processing succeeds but offset commit fails?**
+6. **How do you handle duplicate messages?**
+7. **What is idempotent processing?**
+8. **What is the difference between blocking retry and retry topics?**
+9. **How do you handle database or external API failures?**
+10. **Design a complete Kafka production error-handling architecture.**
+
+For Kafka interviews, the most important concept to remember is:
+
+> **Kafka itself provides reliable message storage and delivery mechanisms, but application-level error handling requires careful decisions about retries, offset commits, idempotency, retry topics, and dead-letter topics.**

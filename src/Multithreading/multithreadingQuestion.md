@@ -597,3 +597,4 @@ Focus heavily on:
 
 **Production**
 → Thread dump → deadlock detection → thread-pool exhaustion → high CPU → blocked threads → queue buildup → lock contention → graceful shutdown.
+---
