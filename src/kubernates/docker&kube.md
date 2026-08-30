@@ -333,3 +333,18 @@ Here is a concise, structured **interview answer**:
 > **So, the overall flow is:** when we apply a Deployment, the request goes to the API Server, the desired state is stored in etcd, the Controller Manager creates the required Pods, the Scheduler assigns those Pods to Worker Nodes, and finally the Kubelet instructs the Container Runtime to start the containers.
 >
 > **The key concept of Kubernetes is that it continuously tries to make the actual state of the cluster match the desired state defined by the user.**
+
+### What happens if etcd goes down?
+> **If etcd goes down completely or loses Raft quorum, the Kubernetes Control Plane cannot properly manage the cluster because etcd is the main persistent data store for the cluster state.**
+>
+> However, the **existing Pods on Worker Nodes generally continue running**, because the kubelet and container runtime already have those containers running locally and don't need to continuously communicate with etcd for the containers to keep executing.
+>
+> Existing networking and Service routing can also continue working because the required networking rules are already configured on the Worker Nodes.
+>
+> But Kubernetes management operations are affected. For example, we cannot reliably create new resources, deploy updates, scale applications, schedule new Pods, or perform normal self-healing.
+>
+> For example, if a Pod or an entire Worker Node fails while etcd is unavailable, Kubernetes cannot reliably create and schedule replacement Pods because the Control Plane cannot access and persist the required cluster state.
+>
+> **In production, we avoid a single etcd failure by running an odd number of etcd nodes, usually 3 or 5, using Raft quorum. A 3-node cluster can tolerate one failure, while a 5-node cluster can tolerate two failures. We also take regular etcd snapshots for disaster recovery.**
+>
+> **In simple terms: if etcd goes down, existing workloads may continue running, but Kubernetes loses its ability to effectively manage, update, scale, and self-heal the cluster until etcd is restored.**
