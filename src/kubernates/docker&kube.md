@@ -306,3 +306,30 @@ In modern DevOps workflows, manual execution of `kubectl` commands is automated 
 [Production Kubernetes Cluster (AWS EKS)]
 
 ```
+---
+### kube architecture
+Here is a concise, structured **interview answer**:
+
+> **Kubernetes architecture is mainly divided into two parts: the Control Plane and Worker Nodes.**
+>
+> The **Control Plane** is responsible for managing the cluster. It contains four main components:
+>
+> **First, the API Server**, which is the entry point for all Kubernetes requests. For example, when we run `kubectl apply`, the request first goes to the API Server. It handles authentication, authorization, validation, and communicates with `etcd`.
+>
+> **Second, etcd**, which is the key-value database of Kubernetes. It stores the cluster's configuration and desired state.
+>
+> **Third, the Controller Manager**, which continuously compares the desired state with the actual state. If there is any difference, it tries to correct it. For example, if we want three replicas but one Pod crashes, the controller creates another Pod to maintain three replicas.
+>
+> **Fourth, the Scheduler**, which is responsible for selecting the most suitable Worker Node for a newly created Pod based on available CPU, memory, affinity rules, taints and tolerations, and other scheduling requirements.
+>
+> On the **Worker Node**, we mainly have three components:
+>
+> **Kubelet**, which runs on every Worker Node. It watches for Pods assigned to its node and instructs the container runtime to start and manage the containers.
+>
+> **The Container Runtime**, such as `containerd` or CRI-O, which actually pulls container images and runs the containers.
+>
+> **Kube-proxy**, which helps manage network communication and routing for Kubernetes Services.
+>
+> **So, the overall flow is:** when we apply a Deployment, the request goes to the API Server, the desired state is stored in etcd, the Controller Manager creates the required Pods, the Scheduler assigns those Pods to Worker Nodes, and finally the Kubelet instructs the Container Runtime to start the containers.
+>
+> **The key concept of Kubernetes is that it continuously tries to make the actual state of the cluster match the desired state defined by the user.**
