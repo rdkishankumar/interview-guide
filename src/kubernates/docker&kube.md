@@ -348,3 +348,126 @@ Here is a concise, structured **interview answer**:
 > **In production, we avoid a single etcd failure by running an odd number of etcd nodes, usually 3 or 5, using Raft quorum. A 3-node cluster can tolerate one failure, while a 5-node cluster can tolerate two failures. We also take regular etcd snapshots for disaster recovery.**
 >
 > **In simple terms: if etcd goes down, existing workloads may continue running, but Kubernetes loses its ability to effectively manage, update, scale, and self-heal the cluster until etcd is restored.**
+
+## How does Kubernetes Scheduler decide where to place a Pod?
+The **`kube-scheduler`** assigns unscheduled Pods to nodes using a two-phase cycle: **Filtering (Predicates)** to find eligible nodes, followed by **Scoring (Priorities)** to rank them. The node with the highest score wins the placement.
+
+---
+
+### Phase 1: Filtering (Predicates)
+
+The scheduler checks each node in the cluster against a set of hard constraints. Any node that fails even one check is immediately filtered out.
+
+* **Resource Availability (`NodeResourcesFit`):** Does the node have enough unallocated CPU, Memory, and Ephemeral Storage to satisfy the Pod's `spec.containers.resources.requests`?
+* **Taints and Tolerations (`NodeUnschedulable` / `TaintToleration`):** Does the node have a taint (e.g., `dedicated=gpu:NoSchedule`) that the Pod does not explicitly tolerate?
+* **Node Selectors & Affinity (`NodeAffinity`):** Does the node match hard rules defined in `nodeSelector` or `requiredDuringSchedulingIgnoredDuringExecution`?
+* **Pod Topology & Anti-Affinity (`PodTopologySpread` / `InterPodAffinity`):** Does placing the Pod here violate co-location or anti-colocation constraints?
+* **Volume Constraints (`VolumeBinding` / `NodeVolumeLimits`):** Can the node attach the requested PV, and is it in the correct availability zone/rack for the underlying storage?
+* **Port Conflicts (`NodePorts`):** Is a requested `hostPort` already bound on this node?
+
+If no nodes survive this phase, the Pod transitions to the **`Pending`** state and emits a `FailedScheduling` event.
+
+---
+
+### Phase 2: Scoring (Priorities)
+
+All nodes that pass the filtering phase are ranked on a scale from 0 to 100 across several scoring plugins:
+
+* **Resource Balancing (`NodeResourcesBalancedAllocation` & `LeastAllocated`):** Prefers nodes with balanced CPU-to-memory usage or nodes that maximize overall cluster utilization.
+* **Soft Affinity Rules (`preferredDuringSchedulingIgnoredDuringExecution`):** Rewards nodes that match the Pod's preferred labels or zone preferences.
+* **Image Locality (`ImageLocality`):** Favors nodes that already have the required container images cached locally to reduce pull times.
+* **Topology Spread (`PodTopologySpread`):** Awards higher scores to nodes in underrepresented failure domains (racks or AZs) for high availability.
+
+Each scoring plugin has an assigned weight. The scheduler calculates a weighted sum:
+
+$$\text{Final Score} = \sum (\text{Plugin Score} \times \text{Plugin Weight})$$
+
+The node with the highest total score is selected. If multiple nodes tie, one is chosen at random.
+
+---
+
+### Phase 3: Binding
+
+Once the node is selected:
+
+1. The scheduler creates a **`Binding`** object targeting the node.
+2. It sends an asynchronous `POST` request to `kube-apiserver`, which writes the assignment into `etcd` (`spec.nodeName`).
+3. The `kubelet` on that target node detects the binding via its watch stream and begins container creation.
+
+---
+
+### End-to-End Decision Flow
+
+```text
+[ Unscheduled Pod ]
+        │
+        ▼
+┌────────────────── Phase 1: Filtering ──────────────────┐
+│  • Check CPU / Memory requests                         │
+│  • Match NodeAffinity / nodeSelector                   │
+│  • Validate Taints & Tolerations                       │
+│  • Verify Port & Volume constraints                    │
+└─────────────────────────┬───────────────────────────────┘
+                          │ (Eligible Nodes)
+                          ▼
+┌─────────────────── Phase 2: Scoring ───────────────────┐
+│  • Score LeastAllocated / BalancedAllocation           │
+│  • Score PreferredAffinity                             │
+│  • Score ImageLocality (cached container images)       │
+│  • Score PodTopologySpread (spread across AZs)         │
+└─────────────────────────┬───────────────────────────────┘
+                          │ (Highest Scored Node)
+                          ▼
+┌─────────────────── Phase 3: Binding ───────────────────┐
+│  • Write spec.nodeName to etcd via API Server          │
+│  • Target Node's kubelet picks up and starts container │
+└────────────────────────────────────────────────────────┘
+
+```
+
+---
+
+### Advanced Scheduling Mechanisms
+
+* **Preemption & Eviction:** If a high-priority Pod (`PriorityClass`) cannot fit on any node, the scheduler can evict lower-priority Pods from a node to clear enough resources.
+* **Custom Scheduling Profiles:** Kubernetes supports multiple schedulers running simultaneously or customized scheduling profiles configured via `KubeSchedulerConfiguration` (e.g., custom filter/score plugins).
+
+##### Interview Answer
+Here is how to deliver this concisely and naturally in an interview:
+
+---
+
+### The Interview Pitch
+
+> "The **`kube-scheduler`** determines Pod placement using a three-phase loop: **Filtering**, **Scoring**, and **Binding**.
+> 1. **Filtering (Predicates):** First, the scheduler eliminates nodes that cannot run the Pod based on hard constraints:
+> * Resource capacity (`requests` for CPU/Memory).
+> * Taints and tolerations.
+> * Hard node affinity (`nodeSelector` or `requiredDuringScheduling`).
+> * Storage zone constraints and host port conflicts.
+    > *(If no nodes pass, the Pod stays in `Pending` with a `FailedScheduling` event.)*
+>
+>
+> 2. **Scoring (Priorities):** Next, it ranks all surviving candidate nodes on a 0–100 scale using weighted scoring plugins:
+> * **Resource balancing:** Balancing CPU vs. memory usage (`LeastAllocated` / `BalancedAllocation`).
+> * **Soft affinity:** Honoring `preferredDuringScheduling` rules.
+> * **Image locality:** Favoring nodes that already have container images cached.
+> * **Topology spread:** Distributing replicas across failure domains (AZs/racks) for high availability.
+    > *(The node with the highest weighted sum wins; ties are broken randomly.)*
+>
+>
+> 3. **Binding:** Finally, the scheduler creates a `Binding` object and updates the Pod's `spec.nodeName` via the API server. The target node's `kubelet` detects this assignment via its watch stream and launches the container runtime."
+>
+>
+
+---
+
+### Senior Engineer Edge (Production Nuance to Mention)
+
+If the interviewer probes for operational depth, add this brief closing point:
+
+> "In production, two edge cases often come up:
+> * **Preemption:** If a high-priority Pod (`PriorityClass`) cannot schedule, the scheduler triggers eviction of lower-priority Pods on a candidate node to free up capacity.
+> * **Custom Frameworks:** Since K8s 1.18+, scheduling logic is fully extensible via the **Scheduling Framework**, allowing custom Go plugins across pre-filter, score, reserve, and permit extension points without maintaining a custom fork."
+>
+----
