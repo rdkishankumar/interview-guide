@@ -93,12 +93,21 @@ Instead of spawning a new OS thread for each incoming request and destroying it 
 
 ### 10. What happens when you create too many threads?
 
-"Spawning excessive threads in Java leads to catastrophic system degradation:
+Here is a natural, conversational way to say this in about a minute:
 
-1. **Native Memory Exhaustion:** Each Java thread allocates a native call stack (`-Xss`, default ~1MB). Creating thousands of threads rapidly causes `java.lang.OutOfMemoryError: unable to create new native thread`.
-2. **Severe CPU Thrashing (Context Switching):** The OS kernel spends more CPU cycles saving and restoring thread execution registers and CPU cache lines than executing actual application code.
-3. **GC & Latency Spikes:** High thread counts increase GC root scanning time and degrade system throughput, leading to cascading HTTP timeouts."
+---
 
+"When we talk about thread creation overhead, we're basically talking about the hidden tax the system pays every time you spin up a traditional thread with `new Thread().start()`.
+
+It might look like a single line of Java code, but under the hood, three heavy things happen:
+
+1. **Memory cost:** A thread isn't just a tiny object on the heap. The operating system and the JVM have to allocate a dedicated call stack for it—usually around 1 MB—plus internal tracking structures. If you spin up a few thousand threads, you can easily burn through gigabytes of RAM before your code even does real work.
+2. **OS and context-switch cost:** Java platform threads map directly to native operating system threads. Creating one means making a native system call—like `clone()` in Linux—to register it with the OS kernel scheduler. That trip into kernel space takes noticeable CPU time.
+3. **Clean-up cost:** When the thread finishes, the system has to deallocate that stack, clean up the thread control blocks, and run garbage collection on the JVM metadata.
+
+If you do this over and over for short-lived tasks, your CPU ends up spending more time managing the lifecycle of threads than executing your actual business logic.
+
+That’s why we historically reuse threads with **thread pools**, or modern Java teams reach for **Virtual Threads**, which are managed entirely in user space and ditch almost all of that kernel overhead."
 ---
 
 ### 11. What is thread creation overhead?
