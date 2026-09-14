@@ -493,6 +493,8 @@ Should the system check whether a long URL already exists before creating a new 
 This design prioritizes the dominant access patterns (massive scale, read-heavy key-value lookups) while retaining flexibility for analytics and user management.
 
 ----
+ #### Next - slide
+
 ### 1. High-Level Database Choice: SQL vs. NoSQL
 
 **Interviewer Question:** *"What database would you pick for a URL shortener, and what trade-offs are you considering?"*
