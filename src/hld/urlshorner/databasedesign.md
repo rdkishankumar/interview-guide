@@ -491,3 +491,148 @@ Should the system check whether a long URL already exists before creating a new 
 - Automatic or range-based sharding with hot-partition mitigations
 
 This design prioritizes the dominant access patterns (massive scale, read-heavy key-value lookups) while retaining flexibility for analytics and user management.
+
+----
+### 1. High-Level Database Choice: SQL vs. NoSQL
+
+**Interviewer Question:** *"What database would you pick for a URL shortener, and what trade-offs are you considering?"*
+
+**Candidate Walkthrough:**
+
+> "To decide on the database, I look directly at our access patterns. A URL shortener is heavily read-dominant—roughly a 100:1 read-to-write ratio. Our main traffic path is extremely simple: look up a `short_code` and return a `long_url`.
+> If we go with a **relational database (PostgreSQL/MySQL)**:
+> * **The upside:** Strong ACID guarantees out of the box, zero risk of duplicate short codes due to unique constraints, and trivial joins with user and billing data.
+> * **The downside:** At scale (billions of rows, tens of thousands of reads/sec), SQL doesn't scale horizontally as cleanly. We’d have to manage read replicas, handle connection pooling, and eventually implement application-level sharding. Relational engines also carry overhead we simply don't need for a primary-key lookup.
+>
+>
+> If we pick a **distributed NoSQL key-value/wide-column store (DynamoDB/Cassandra)**:
+> * **The upside:** Horizontal scalability is built-in from day one. It partitions across machines based on the partition key, natively handles millions of requests per second, and offers turnkey multi-region replication.
+> * **The downside:** We lose cross-entity ACID transactions and flexible query capability. Running complex analytical queries directly against the operational table becomes expensive or impractical.
+>
+>
+> **The Decision:** I would choose a **hybrid (polyglot persistence) model**.
+> * **NoSQL (DynamoDB/Cassandra)** for the core URL mapping table because ultra-low-latency, high-throughput key-value lookup is the core business path.
+> * **SQL (PostgreSQL)** for user account management and structured analytical reporting where relations and query flexibility actually matter."
+>
+>
+
+---
+
+### 2. Schema Architecture & Data Decoupling
+
+**Interviewer Question:** *"Can you sketch out the schema? Where do click counts and analytics live?"*
+
+**Candidate Walkthrough:**
+
+> "Here is the schema for our core URL store:
+> | Field | Type | Description |
+> | --- | --- | --- |
+> | `short_code` | String (PK) | Base62/encoded alias (e.g., `aB3x9Z`). |
+> | `long_url` | String | Target destination URL. |
+> | `user_id` | String / UUID | Owner identifier (nullable for anonymous links). |
+> | `created_at` | Timestamp | Record creation time. |
+> | `expires_at` | Timestamp | Expiration deadline (default 2 years). |
+> | `is_custom` | Boolean | Flags whether the user provided a custom vanity alias. |
+> | `is_active` | Boolean | Used for soft deletion. |
+>
+>
+> **The Click Count Bottleneck:**
+> A very tempting mistake is to put a `click_count` counter column right inside this URL table. If a celebrity tweets out a link that gets hit 50,000 times a second, updating that single row creates massive write-lock contention and turns that database partition into a hot spot.
+> Instead, I **completely decouple write path analytics from the core redirect path**:
+> 1. The redirection service serves the redirect from the cache or the URL table.
+> 2. It asynchronously emits an event (e.g., to Kafka or SQS) containing the click details.
+> 3. An analytics worker consumes the event and writes to an append-only `Click_Events` table:
+>
+>
+> | Field | Type | Description |
+> | --- | --- | --- |
+> | `short_code` | String (Partition Key) | Reference to the URL. |
+> | `clicked_at` | Timestamp (Sort Key) | Exact time of click. |
+> | `ip_address` | String | Client IP (used for geolocation). |
+> | `user_agent` | String | Browser and device metadata. |
+> | `referrer` | String | Source domain. |
+> | `country` / `city` | String | Resolved from IP during event ingestion. |
+>
+>
+> **Data Retention & Aggregation:**
+> We keep granular, raw click rows for **30 days** to allow deep diagnostics. After 30 days, an asynchronous batch job rolls these events up into daily summary aggregates (`short_code`, `date`, `country`, `total_clicks`) and purges raw rows. This keeps storage bounded while preserving long-term dashboards."
+
+---
+
+### 3. Indexing Strategy
+
+**Interviewer Question:** *"How would you index these tables to keep latency low?"*
+
+**Candidate Walkthrough:**
+
+> "For the primary **URL Table**:
+> * **Primary Index (Partition Key):** Hash index on `short_code`. Since 99% of requests look up a single short code to fetch the long URL, this gives us $O(1)$ point-lookup performance.
+> * **Global Secondary Index (GSI):** Indexed on `user_id`. When users log in to their dashboard and want to see 'My Links', we query by `user_id` without doing an expensive full-table scan.
+>
+>
+> For the **Analytics Table**:
+> * **Compound Key:** `(short_code, clicked_at)`. With `short_code` as the partition key and `clicked_at` as the sort/clustering key, we can run efficient range scans. For example: *'Give me all clicks for short code `abc123` between Monday and Friday.'*"
+>
+>
+
+---
+
+### 4. Sharding & Hot Partition Mitigation
+
+**Interviewer Question:** *"What happens when a single link goes viral? How do you prevent that partition from failing?"*
+
+**Candidate Walkthrough:**
+
+> "In a distributed NoSQL setup, data is automatically sharded across physical nodes using a hash of the partition key (`short_code`). Under normal traffic, URLs distribute evenly.
+> However, if a link goes viral, millions of reads target the exact same node:
+> 1. **First Line of Defense (In-Memory Cache):** A Redis/Memcached cluster sits ahead of the database. Popular URLs should hit memory and never touch the database at all.
+> 2. **Database-Level Defense (Partition Salting):** If hot write traffic or cache misses still saturate a single partition, we can implement key salting. Instead of writing exclusively to `abc123`, we append a random suffix between `0` and `9` (e.g., `abc123#4`). This distributes the data and load across 10 distinct physical partitions. On read, the service can query any of the 10 partitions (or query across them in parallel if writing counts)."
+>
+>
+
+---
+
+### 5. Lifecycle Policies: Expiration, Archival & Deduplication
+
+**Interviewer Question:** *"How do you handle link expiration and duplicate long URLs?"*
+
+**Candidate Walkthrough:**
+
+> "**Soft Deletes Over Hard Deletes:**
+> We set links to expire after 2 years, but executing a hard `DELETE` is dangerous. If an enterprise customer lets a link expire accidentally or wants to review historical analytics, that data is gone.
+> * We flip `is_active = false`. The redirect API treats inactive records as 404 or expired.
+> * To prevent database bloat, we run a lifecycle rule: records inactive for $> 5\text{ years}$ are exported to cold object storage (like AWS S3 Glacier) and removed from the active operational database.
+>
+>
+> **URL Deduplication Trade-off:**
+> Should we check if a `long_url` already exists before creating a new `short_code`?
+> * **My Recommendation: Do NOT deduplicate.**
+> * Enforcing deduplication requires either an index on `long_url` (which is expensive and slow for long, variable-length text) or a reverse lookup table (`hash(long_url) -> short_code`).
+> * More importantly, distinct users frequently shorten the same destination URL (e.g., `[youtube.com/watch?v=](https://youtube.com/watch?v=)...`) and demand their own isolated analytics. Storage is cheap; maintaining strict deduplication adds operational complexity with almost no real business benefit."
+>
+>
+
+---
+
+### 6. Caching Strategy & Disaster Recovery
+
+**Interviewer Question:** *"Can you tie this together with caching and reliability?"*
+
+**Candidate Walkthrough:**
+
+> "**Cache Architecture:**
+> We use the **Cache-Aside (Lazy Loading)** pattern:
+> 1. The application checks Redis for `short_code`.
+> 2. If it hits, return `long_url` immediately (sub-millisecond latency).
+> 3. If it misses, fetch from NoSQL, populate Redis with a 24-hour TTL, and return.
+>
+>
+> Following the 80/20 rule, roughly 20% of the links generate 80% of the traffic. Keeping those hot keys in cache absorbs over 90% of database read volume.
+> **Consistency Boundary:**
+> * **Strong Consistency:** Required during link creation. We cannot tolerate a race condition where two different users receive the exact same short code.
+> * **Eventual Consistency:** Acceptable for click metrics, daily rollups, and cache updates. If analytics lag by a few seconds, it doesn't affect user experience.
+>
+>
+> **Disaster Recovery:**
+> * Multi-region active-active or active-passive setups using managed global tables (e.g., DynamoDB Global Tables). If a primary AWS region drops, traffic routes to the secondary region seamlessly.
+> * Automated daily snapshots combined with Continuous Backups / Point-in-Time Recovery (PITR) to protect against accidental mass deletions or bad schema migrations."
